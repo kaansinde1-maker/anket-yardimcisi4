@@ -1,0 +1,53 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Kodu çek
+        uses: actions/checkout@v4
+
+      - name: JDK 17 kur
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Android SDK lisanslarını kabul et
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Gradle kur (wrapper gerektirmez)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Debug APK derle
+        run: gradle assembleDebug --stacktrace
+
+      - name: APK'yı sabit adla kopyala
+        run: cp app/build/outputs/apk/debug/app-debug.apk FormOtomasyon.apk
+
+      - name: APK'yı artifact olarak yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: form-otomasyon-debug-apk
+          path: FormOtomasyon.apk
+          if-no-files-found: error
+
+      - name: Release oluştur ve APK'yı ekle
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Form Otomasyon build ${{ github.run_number }}
+          files: FormOtomasyon.apk
+          make_latest: true
