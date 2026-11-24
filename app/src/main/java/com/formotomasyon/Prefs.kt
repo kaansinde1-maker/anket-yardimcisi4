@@ -1,6 +1,8 @@
 package com.formotomasyon
 
 import android.content.Context
+import kotlin.properties.ReadWriteProperty
+import kotlin.reflect.KProperty
 
 object BinaTipleri {
     val liste = listOf(
@@ -15,39 +17,48 @@ object BinaTipleri {
     )
 }
 
-class Cfg(ctx: Context) {
-    private val p = ctx.applicationContext.getSharedPreferences("cfg", Context.MODE_PRIVATE)
-    private fun s(k: String, d: String = ""): String = p.getString(k, d) ?: d
-    private fun put(k: String, v: String) { p.edit().putString(k, v).apply() }
+/** SharedPreferences üzerinde tutulan kullanıcı ayarları. */
+class Cfg(context: Context) {
+    private val prefs = context.applicationContext.getSharedPreferences("cfg", Context.MODE_PRIVATE)
 
-    var targetPkg: String
-        get() = s("targetPkg")
-        set(v) = put("targetPkg", v)
-    var mahalle: String
-        get() = s("mahalle")
-        set(v) = put("mahalle", v)
-    var cadde: String
-        get() = s("cadde")
-        set(v) = put("cadde", v)
-    var sokak: String
-        get() = s("sokak")
-        set(v) = put("sokak", v)
-    var binaAdi: String
-        get() = s("binaAdi")
-        set(v) = put("binaAdi", v)
-    var binaNo: String
-        get() = s("binaNo")
-        set(v) = put("binaNo", v)
+    var targetPkg by stringPref("targetPkg")
+    var mahalle by stringPref("mahalle")
+    var cadde by stringPref("cadde")
+    var sokak by stringPref("sokak")
+    var binaAdi by stringPref("binaAdi")
+    var binaNo by stringPref("binaNo")
+    /** Daire No en az 1: kayıtlı 0 veya negatif değer 1'e çevrilir. */
     var daireNo: String
-        get() = s("daireNo", "1")
-        set(v) = put("daireNo", v)
-    var binaTipi: String
-        get() = s("binaTipi")
-        set(v) = put("binaTipi", v)
-    var mahCache: String
-        get() = s("mahCache")
-        set(v) = put("mahCache", v)
-    var ilceIkinci: Boolean
-        get() = p.getBoolean("ilceIkinci", false)
-        set(v) { p.edit().putBoolean("ilceIkinci", v).apply() }
+        get() = floorDaire(prefs.getString("daireNo", "1") ?: "1")
+        set(value) {
+            prefs.edit().putString("daireNo", floorDaire(value)).apply()
+        }
+    var binaTipi by stringPref("binaTipi")
+    var mahCache by stringPref("mahCache")
+    var ilceIkinci by booleanPref("ilceIkinci")
+
+    private fun floorDaire(value: String): String {
+        val n = value.trim().toLongOrNull()
+        return if (n != null && n < 1L) "1" else value
+    }
+
+    private fun stringPref(key: String, default: String = ""): ReadWriteProperty<Any?, String> =
+        object : ReadWriteProperty<Any?, String> {
+            override fun getValue(thisRef: Any?, property: KProperty<*>): String =
+                prefs.getString(key, default) ?: default
+
+            override fun setValue(thisRef: Any?, property: KProperty<*>, value: String) {
+                prefs.edit().putString(key, value).apply()
+            }
+        }
+
+    private fun booleanPref(key: String): ReadWriteProperty<Any?, Boolean> =
+        object : ReadWriteProperty<Any?, Boolean> {
+            override fun getValue(thisRef: Any?, property: KProperty<*>): Boolean =
+                prefs.getBoolean(key, false)
+
+            override fun setValue(thisRef: Any?, property: KProperty<*>, value: Boolean) {
+                prefs.edit().putBoolean(key, value).apply()
+            }
+        }
 }
