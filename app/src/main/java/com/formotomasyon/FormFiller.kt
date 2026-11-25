@@ -267,10 +267,14 @@ class FormFiller(
         clickNext(fast = true)
         currentStep = "10 Doğrulama: onay penceresi"
         pressDialogOk("Doğrulama onay penceresi")
-        currentStep = "10 Doğrulama: İleri (son)"
-        clickNext(fast = true)
+        currentStep = "10 Doğrulama: sonraki soruya geçiş"
+        // Onay penceresinden sonra uygulama kendiliğinden sonraki soruya geçmiş olabilir: geçtiyse İleri'ye basma.
+        if (!waitUntil(ADVANCE_GRACE_MS) { !onVerifyScreen() }) clickNext(fast = true)
         return true
     }
+
+    /** Doğrulama ekranında "DOĞRULAMA KODU GÖNDER" düğmesi görünür; sonraki sorularda yoktur. */
+    private fun onVerifyScreen(): Boolean = findButton("kodu gönder", "dogrulama kodu gonder") != null
 
     private suspend fun editableAt(index: Int, what: String): AccessibilityNodeInfo =
         waitFor(STEP_MS) {
@@ -576,6 +580,7 @@ class FormFiller(
         const val CITY = "Manisa"
         const val VERIFY_CODE = "160922"
         const val DIALOG_MS = 3000L
+        const val ADVANCE_GRACE_MS = 500L
         const val MIN_SCORE = 0.80
         const val MIN_MARGIN = 0.07
         const val PLACEHOLDER = "seciniz"

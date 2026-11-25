@@ -100,7 +100,6 @@ class FloatingWidget(
         textSize = 18f
         setTextColor(Color.WHITE)
         gravity = Gravity.CENTER
-        minWidth = dp(46)
         setPadding(dp(10), dp(4), dp(10), dp(4))
         setOnClickListener { onAdjust(delta) }
     }
