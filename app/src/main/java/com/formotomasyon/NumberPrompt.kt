@@ -3,7 +3,9 @@ package com.formotomasyon
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.View
@@ -41,7 +43,7 @@ class NumberPrompt(
     fun show(onResult: (String?) -> Unit) {
         dismiss()
         val input = EditText(ctx).apply {
-            hint = "Telefon numarası"
+            hint = "x xxx xxx xx xx"
             setTextColor(TEXT)
             setHintTextColor(HINT)
             textSize = 16f
@@ -51,8 +53,23 @@ class NumberPrompt(
             background = rounded(FIELD, 6 * density)
             setPadding(dp(10), dp(8), dp(10), dp(8))
         }
+        input.addTextChangedListener(object : TextWatcher {
+            private var busy = false
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                if (busy || s == null) return
+                val formatted = format(s.toString().filter { it.isDigit() }.take(MAX_DIGITS))
+                if (formatted != s.toString()) {
+                    busy = true
+                    s.replace(0, s.length, formatted)
+                    busy = false
+                }
+            }
+        })
         fun submit() {
-            val value = input.text.toString().trim()
+            // Görünüşte boşluklu (x xxx xxx xx xx), ankete boşluksuz gider.
+            val value = input.text.toString().filter { it.isDigit() }
             if (value.isEmpty()) {
                 toast("Numara boş")
                 return
@@ -110,6 +127,19 @@ class NumberPrompt(
         }, KEYBOARD_DELAY_MS)
     }
 
+    /** Rakamları 1-3-3-2-2 gruplarına ayırır, sonuna boşluk eklemez. */
+    private fun format(digits: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        for (size in GROUPS) {
+            if (i >= digits.length) break
+            if (sb.isNotEmpty()) sb.append(' ')
+            sb.append(digits, i, minOf(i + size, digits.length))
+            i += size
+        }
+        return sb.toString()
+    }
+
     private fun button(text: String, color: Int, onClick: () -> Unit) = Button(ctx).apply {
         this.text = text
         textSize = 14f
@@ -129,6 +159,8 @@ class NumberPrompt(
 
     private companion object {
         const val KEYBOARD_DELAY_MS = 250L
+        const val MAX_DIGITS = 11
+        val GROUPS = intArrayOf(1, 3, 3, 2, 2)
         val BACKGROUND = 0xFF121212.toInt()
         val FIELD = 0xFF1E1E1E.toInt()
         val TEXT = 0xFFEEEEEE.toInt()

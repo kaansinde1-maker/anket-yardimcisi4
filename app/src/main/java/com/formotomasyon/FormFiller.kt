@@ -200,19 +200,13 @@ class FormFiller(
         waitUntil(SHOW_WAIT_MS) { n.refresh(); n.isVisibleToUser }
     }
 
-    /** Şıkkı seçer; tıklama işe yaramazsa sırayla ata tıklama ve ACTION_SELECT dener, her seferinde isChecked'e bakar. */
+    /** Şıkkı İlçe akışındaki gibi tıklar (tıklanabilir kendisi ya da atası), isChecked'i 3 sn'ye kadar bekler; olmazsa bir kez daha tıklar. */
     private suspend fun selectRadio(option: AccessibilityNodeInfo, name: String) {
-        val attempts = listOf<() -> Boolean>(
-            { option.performAction(AccessibilityNodeInfo.ACTION_CLICK) },
-            { Nodes.clickableSelfOrAncestor(option)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) ?: false },
-            { option.performAction(AccessibilityNodeInfo.ACTION_SELECT) }
-        )
-        for ((i, attempt) in attempts.withIndex()) {
-            attempt()
-            val wait = if (i == attempts.lastIndex) RADIO_WAIT_MS else CHECK_MS
-            if (waitUntil(wait) { option.refresh(); option.isChecked }) return
+        repeat(2) {
+            if (!clickNode(option)) fail("$name tıklanıyor", "ACTION_CLICK true", "false")
+            if (waitUntil(STEP_MS) { option.refresh(); option.isChecked }) return
         }
-        fail("$name seçildi mi kontrolü", "isChecked=true", "tıklama, ata tıklama ve ACTION_SELECT sonrası false")
+        fail("$name seçildi mi kontrolü", "isChecked=true", "2 tıklama ve ${STEP_MS} ms beklemeden sonra false")
     }
 
     // ---- 82. soru: çalışma tamamlandı + KAYDET
@@ -229,17 +223,18 @@ class FormFiller(
         clickOrFail(save, "KAYDET tıklanıyor")
     }
 
-    /** İki aynı şıktan en üstteki seçilir. */
+    /** İki aynı şıktan en üsttekini seçer (İlçe akışındaki gibi görünür RadioButton'lar, üstten alta sıralı). */
     private fun findFinishOption(key: String): AccessibilityNodeInfo? {
-        val fast = screen.roots()
-            .flatMap { it.findAccessibilityNodeInfosByText("amamland") }
-            .filter { !it.isEditable && Nodes.normLabel(it) == key }
-        val nodes = fast.ifEmpty {
-            screen.allNodes().filter {
-                !it.isEditable && it.className?.toString()?.contains("RadioButton") == true && Nodes.normLabel(it) == key
-            }
+        val visible = radioButtons().filter { " ${Nodes.normLabel(it)} ".contains(" $key ") }
+        if (visible.isNotEmpty()) {
+            listInfo = "82 şıkları (üstten alta): ${visible.labels()} → seçilen: en üstteki"
+            return visible.first()
         }
-        return nodes.sortedWith(byPosition).firstOrNull()
+        return screen.roots()
+            .flatMap { it.findAccessibilityNodeInfosByText("amamland") }
+            .filter { !it.isEditable && " ${Nodes.normLabel(it)} ".contains(" $key ") }
+            .sortedWith(byPosition)
+            .firstOrNull()
     }
 
     private fun findButton(query: String, norm: String): AccessibilityNodeInfo? {
