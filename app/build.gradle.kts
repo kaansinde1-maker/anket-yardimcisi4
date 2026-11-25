@@ -11,8 +11,8 @@ android {
         applicationId = "com.formotomasyon"
         minSdk = 34
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.3.3"
+        versionCode = 12
+        versionName = "1.3.7"
     }
 
     signingConfigs {

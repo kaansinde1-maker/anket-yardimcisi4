@@ -69,7 +69,7 @@ class FloatingWidget(
             textSize = 14f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            minWidth = dp(36)
+            minWidth = dp(54)
             setPadding(dp(10), dp(6), dp(10), dp(6))
         }
         box.addView(adjustButton("−", -1))
@@ -100,6 +100,7 @@ class FloatingWidget(
         textSize = 18f
         setTextColor(Color.WHITE)
         gravity = Gravity.CENTER
+        minWidth = dp(46)
         setPadding(dp(10), dp(4), dp(10), dp(4))
         setOnClickListener { onAdjust(delta) }
     }

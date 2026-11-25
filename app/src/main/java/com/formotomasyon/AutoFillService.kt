@@ -16,6 +16,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -41,6 +43,7 @@ class AutoFillService : AccessibilityService() {
     private lateinit var reports: ReportBuilder
     private lateinit var widget: FloatingWidget
     private lateinit var panel: SettingsPanel
+    private lateinit var numberPrompt: NumberPrompt
 
     private var running = false
     private var lastForeign = ""
@@ -70,6 +73,7 @@ class AutoFillService : AccessibilityService() {
         scope.cancel()
         if (::widget.isInitialized) widget.remove()
         if (::panel.isInitialized) panel.dismiss()
+        if (::numberPrompt.isInitialized) numberPrompt.dismiss()
         instance = null
         super.onDestroy()
     }
@@ -85,6 +89,7 @@ class AutoFillService : AccessibilityService() {
             onLongPress = { panel.show() },
             onAdjust = ::adjustDaireNo
         )
+        numberPrompt = NumberPrompt(this, wm, ::toast)
         panel = SettingsPanel(this, wm, cfg, object : SettingsPanel.Host {
             override val foregroundPackage: String get() = lastForeign
             override val lastReport: String get() = this@AutoFillService.lastReport
@@ -167,8 +172,8 @@ class AutoFillService : AccessibilityService() {
         widget.paint(FloatingWidget.State.RUNNING)
         scope.launch {
             try {
-                filler.run()
-                toast("Tamamlandı")
+                val completed = filler.run(::askPhone)
+                if (completed) toast("Tamamlandı")
                 widget.paint(FloatingWidget.State.IDLE)
             } catch (f: StepFail) {
                 reportFailure(f)
@@ -180,6 +185,12 @@ class AutoFillService : AccessibilityService() {
                 running = false
             }
         }
+    }
+
+    /** 10. soru için küçük numara penceresini açar; Gir'e basılınca numarayı, İptal'de null döndürür. */
+    private suspend fun askPhone(): String? = suspendCancellableCoroutine { cont ->
+        numberPrompt.show { result -> if (cont.isActive) cont.resume(result) }
+        cont.invokeOnCancellation { numberPrompt.dismiss() }
     }
 
     private fun reportFailure(failure: StepFail) {

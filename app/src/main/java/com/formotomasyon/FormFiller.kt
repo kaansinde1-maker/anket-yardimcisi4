@@ -36,31 +36,43 @@ class FormFiller(
 
     private val byPosition = compareBy<AccessibilityNodeInfo>({ Nodes.top(it) }, { Nodes.left(it) })
 
-    private enum class Flow { MAIN, CITY, NOTES_BOTH, NOTES_AUDIT }
+    private enum class Flow { MAIN, CITY, NOTES_BOTH, NOTES_AUDIT, FINISH, VERIFY }
 
     /** Butona basılan anda ekran başlığına tek taramayla bakıp akışı seçer. */
-    suspend fun run() {
+    suspend fun run(askPhone: suspend () -> String?): Boolean {
         when (detectFlow()) {
             Flow.CITY -> runCity()
             Flow.NOTES_BOTH -> runNotes(both = true)
             Flow.NOTES_AUDIT -> runNotes(both = false)
+            Flow.FINISH -> runFinish()
+            Flow.VERIFY -> return runVerify(askPhone)
             Flow.MAIN -> runMain()
         }
+        return true
+    }
+
+    private fun classify(text: String): Flow? = when {
+        text.contains(" aslen nereli ") -> Flow.CITY
+        text.contains(" anketor notu ") -> Flow.NOTES_BOTH
+        text.contains(" denetci notu ") -> Flow.NOTES_AUDIT
+        text.contains(" calisma sona ermistir ") -> Flow.FINISH
+        text.contains(" dogrulama kodu ") -> Flow.VERIFY
+        else -> null
     }
 
     private fun detectFlow(): Flow {
-        val visible = screen.allNodes().filter { it.isVisibleToUser && !it.isEditable }
-        fun classify(nodes: List<AccessibilityNodeInfo>): Flow? {
-            val texts = nodes.map { " ${Nodes.normLabel(it)} " }
-            return when {
-                texts.any { it.contains(" aslen nereli ") } -> Flow.CITY
-                texts.any { it.contains(" anketor notu ") } -> Flow.NOTES_BOTH
-                texts.any { it.contains(" denetci notu ") } -> Flow.NOTES_AUDIT
-                else -> null
-            }
+        // Hızlı yol: yalnızca soru başlığı düğümüne bakılır, ağaç gezilmez.
+        val titleNode = screen.roots().firstNotNullOfOrNull { root ->
+            root.findAccessibilityNodeInfosByViewId("${root.packageName}:id/txt_Soru").firstOrNull()
         }
-        val titled = visible.filter { it.viewIdResourceName?.endsWith("/txt_Soru") == true }
-        return classify(titled) ?: classify(visible) ?: Flow.MAIN
+        val title = " ${titleNode?.let { Nodes.normLabel(it) }.orEmpty()} "
+        if (title.isNotBlank()) {
+            classify(title)?.let { return it }
+            if (STEPS.any { title.contains(" ${Txt.norm(it)} ") }) return Flow.MAIN
+        }
+        // Başlık düğümü bulunamadı ya da tanınmadı: görünen tüm metinlere tek taramayla bak.
+        val visible = screen.allNodes().filter { it.isVisibleToUser && !it.isEditable }
+        return visible.firstNotNullOfOrNull { classify(" ${Nodes.normLabel(it)} ") } ?: Flow.MAIN
     }
 
     private suspend fun runMain() {
@@ -133,49 +145,150 @@ class FormFiller(
     private suspend fun runCity() {
         currentStep = "34 Aslen nereli ($CITY)"
         val key = Txt.norm(CITY)
-        val option = scrollFind { findCityOption(key) }
+        val option = findByText(CITY, key) ?: scrollFindCity(key)
             ?: fail("Şehir şıkkı aranıyor", "'$CITY' şıkkı", "liste taranınca bulunamadı; son görünenler: " + cityCandidates().labels())
         listInfo = "Şehir şıkkı: '${Nodes.label(option)}'"
-        clickOrFail(option, "Şehir şıkkı tıklanıyor")
-        val checked = waitUntil(STEP_MS) { option.refresh(); option.isChecked }
-        if (!checked) fail("Şehir şıkkı seçildi mi kontrolü", "isChecked=true", "false")
-        clickNext()
+        bringIntoView(option)
+        selectRadio(option, "Şehir şıkkı")
+        clickNext(fast = true)
     }
+
+    /** Arama metniyle uygulamanın kendi içinde tek seferde arar; ağacı tek tek gezmez. Ekran dışındaki şıkları da bulur. */
+    private fun findByText(query: String, key: String): AccessibilityNodeInfo? {
+        val hits = screen.roots()
+            .flatMap { it.findAccessibilityNodeInfosByText(query) }
+            .filter { !it.isEditable && (it.isCheckable || it.className?.toString()?.contains("RadioButton") == true) }
+        return pickByKey(hits, key)
+    }
+
+    /** Önce tam eşleşme, sonra kelime sınırlı içerme ("45 - Manisa"). */
+    private fun pickByKey(nodes: List<AccessibilityNodeInfo>, key: String): AccessibilityNodeInfo? =
+        nodes.firstOrNull { Nodes.normLabel(it) == key }
+            ?: nodes.firstOrNull { " ${Nodes.normLabel(it)} ".contains(" $key ") }
 
     private fun cityCandidates(): List<AccessibilityNodeInfo> =
         radioButtons().ifEmpty {
             screen.allNodes().filter { it.isVisibleToUser && !it.isEditable && Nodes.label(it).isNotEmpty() }
         }
 
-    /** Önce tam eşleşme, sonra kelime sınırlı içerme ("45 - Manisa"). */
-    private fun findCityOption(key: String): AccessibilityNodeInfo? {
-        val nodes = cityCandidates()
-        return nodes.firstOrNull { Nodes.normLabel(it) == key }
-            ?: nodes.firstOrNull { " ${Nodes.normLabel(it)} ".contains(" $key ") }
-    }
-
-    /** Önce aşağı, bulunamazsa yukarı kaydırarak [find] bir düğüm döndürene kadar arar. */
-    private suspend fun scrollFind(find: () -> AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+    /** Hızlı arama sonuç vermezse (ör. liste sanallaştırılmışsa): önce aşağı, sonra yukarı kaydırarak ara. */
+    private suspend fun scrollFindCity(key: String): AccessibilityNodeInfo? {
         val end = SystemClock.uptimeMillis() + LONG_LIST_MS
         for (forward in listOf(true, false)) {
             var tries = 0
             while (tries < LONG_LIST_TRIES && SystemClock.uptimeMillis() < end) {
-                find()?.let { return it }
-                if (!scrollPage(forward)) break
+                val nodes = screen.allNodes()
+                val radios = nodes.filter { it.className?.toString()?.contains("RadioButton") == true }
+                pickByKey(radios, key)?.let { return it }
+                val list = nodes.firstOrNull { it.isScrollable && it.viewIdResourceName?.endsWith("/scrollView2") == true }
+                    ?: nodes.firstOrNull { it.isScrollable }
+                    ?: break
+                val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                val seen = events.get()
+                if (!list.performAction(action)) break
+                waitUntil(LONG_SCROLL_WAIT_MS) { events.get() != seen }
                 tries++
             }
         }
         return null
     }
 
-    private suspend fun scrollPage(forward: Boolean): Boolean {
-        val before = screen.visibleSignature()
-        val list = radioButtons().firstOrNull()?.let { Nodes.scrollableAncestor(it) }
-            ?: screen.allNodes().firstOrNull { it.isScrollable }
-            ?: return false
-        val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-        if (!list.performAction(action)) return false
-        return waitUntil(PAGE_SCROLL_WAIT_MS) { screen.visibleSignature() != before }
+    /** Düğüm ekran dışındaysa tek eylemle görünür alana getirir. */
+    private suspend fun bringIntoView(n: AccessibilityNodeInfo) {
+        if (n.isVisibleToUser) return
+        n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
+        waitUntil(SHOW_WAIT_MS) { n.refresh(); n.isVisibleToUser }
+    }
+
+    /** Şıkkı seçer; tıklama işe yaramazsa sırayla ata tıklama ve ACTION_SELECT dener, her seferinde isChecked'e bakar. */
+    private suspend fun selectRadio(option: AccessibilityNodeInfo, name: String) {
+        val attempts = listOf<() -> Boolean>(
+            { option.performAction(AccessibilityNodeInfo.ACTION_CLICK) },
+            { Nodes.clickableSelfOrAncestor(option)?.performAction(AccessibilityNodeInfo.ACTION_CLICK) ?: false },
+            { option.performAction(AccessibilityNodeInfo.ACTION_SELECT) }
+        )
+        for ((i, attempt) in attempts.withIndex()) {
+            attempt()
+            val wait = if (i == attempts.lastIndex) RADIO_WAIT_MS else CHECK_MS
+            if (waitUntil(wait) { option.refresh(); option.isChecked }) return
+        }
+        fail("$name seçildi mi kontrolü", "isChecked=true", "tıklama, ata tıklama ve ACTION_SELECT sonrası false")
+    }
+
+    // ---- 82. soru: çalışma tamamlandı + KAYDET
+
+    private suspend fun runFinish() {
+        currentStep = "82 Çalışma tamamlandı"
+        val key = Txt.norm("Çalışma tamamlandı")
+        val option = waitFor(STEP_MS) { findFinishOption(key) }
+            ?: fail("Şık aranıyor", "'Çalışma tamamlandı' şıkkı", "bulunamadı")
+        bringIntoView(option)
+        selectRadio(option, "Çalışma tamamlandı")
+        val save = waitFor(STEP_MS) { findButton("kaydet", "kaydet") }
+            ?: fail("KAYDET düğmesi", "'KAYDET' düğmesi", "bulunamadı")
+        clickOrFail(save, "KAYDET tıklanıyor")
+    }
+
+    /** İki aynı şıktan en üstteki seçilir. */
+    private fun findFinishOption(key: String): AccessibilityNodeInfo? {
+        val fast = screen.roots()
+            .flatMap { it.findAccessibilityNodeInfosByText("amamland") }
+            .filter { !it.isEditable && Nodes.normLabel(it) == key }
+        val nodes = fast.ifEmpty {
+            screen.allNodes().filter {
+                !it.isEditable && it.className?.toString()?.contains("RadioButton") == true && Nodes.normLabel(it) == key
+            }
+        }
+        return nodes.sortedWith(byPosition).firstOrNull()
+    }
+
+    private fun findButton(query: String, norm: String): AccessibilityNodeInfo? {
+        val hit = screen.roots()
+            .flatMap { it.findAccessibilityNodeInfosByText(query) }
+            .firstOrNull { it.isVisibleToUser && Nodes.normLabel(it) == norm }
+            ?: screen.allNodes().firstOrNull { it.isVisibleToUser && Nodes.normLabel(it) == norm }
+        return hit?.let { Nodes.clickableSelfOrAncestor(it) ?: it }
+    }
+
+    // ---- 10. soru: doğrulama kodu
+
+    private suspend fun runVerify(askPhone: suspend () -> String?): Boolean {
+        currentStep = "10 Doğrulama: numara isteniyor"
+        val phone = askPhone() ?: return false
+        currentStep = "10 Doğrulama: telefon numarası yazılıyor"
+        setFieldText(editableAt(0, "Telefon numarası kutusu"), phone)
+        currentStep = "10 Doğrulama: kod gönderiliyor"
+        clickButton("kodu gönder", "dogrulama kodu gonder", "'Doğrulama kodu gönder' düğmesi")
+        currentStep = "10 Doğrulama: SMS penceresi"
+        pressDialogOk("SMS penceresi")
+        currentStep = "10 Doğrulama: kod yazılıyor"
+        setFieldText(editableAt(1, "Doğrulama kodu kutusu"), VERIFY_CODE)
+        currentStep = "10 Doğrulama: İleri"
+        clickNext(fast = true)
+        currentStep = "10 Doğrulama: onay penceresi"
+        pressDialogOk("Doğrulama onay penceresi")
+        currentStep = "10 Doğrulama: İleri (son)"
+        clickNext(fast = true)
+        return true
+    }
+
+    private suspend fun editableAt(index: Int, what: String): AccessibilityNodeInfo =
+        waitFor(STEP_MS) {
+            screen.allNodes().filter { it.isEditable && it.isVisibleToUser }.sortedWith(byPosition).getOrNull(index)
+        } ?: fail("$what aranıyor", "${index + 1}. görünür EditText", "bulunamadı")
+
+    private suspend fun clickButton(query: String, norm: String, what: String) {
+        val button = waitFor(STEP_MS) { findButton(query, norm) }
+            ?: fail("$what aranıyor", what, "bulunamadı")
+        clickOrFail(button, "$what tıklanıyor")
+    }
+
+    /** OK'lı pencere çıkar çıkmaz (en çok DIALOG_MS) OK'a basar; mesajı kontrol etmez. Pencerenin kapanmasını bekler. */
+    private suspend fun pressDialogOk(what: String) {
+        val ok = waitFor(DIALOG_MS) { findButton("ok", "ok") }
+            ?: fail("$what bekleniyor", "'OK' düğmeli pencere", "${DIALOG_MS / 1000} sn içinde çıkmadı")
+        clickOrFail(ok, "$what OK tıklanıyor")
+        waitUntil(STEP_MS) { findButton("ok", "ok") == null }
     }
 
     // ---- 80 / 81. sorular: not alanları
@@ -184,12 +297,12 @@ class FormFiller(
         if (both) {
             currentStep = "80 Anketör notu"
             typeText(".")
-            clickNext()
+            clickNext(fast = true)
             awaitTitle("Denetçi notu")
         }
         currentStep = "81 Denetçi notu"
         typeText(".")
-        clickNext()
+        clickNext(fast = true)
     }
 
     // ---- ekran başlığı
@@ -212,6 +325,10 @@ class FormFiller(
     private suspend fun typeText(text: String) {
         val field = waitFor(STEP_MS) { screen.allNodes().firstOrNull { it.isEditable && it.isVisibleToUser } }
             ?: fail("Metin kutusu aranıyor", "Görünür EditText", "bulunamadı")
+        setFieldText(field, text)
+    }
+
+    private suspend fun setFieldText(field: AccessibilityNodeInfo, text: String) {
         field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
@@ -417,7 +534,14 @@ class FormFiller(
 
     // ---- İleri
 
-    private fun findNext(): AccessibilityNodeInfo? {
+    private fun findNext(fast: Boolean = false): AccessibilityNodeInfo? {
+        if (fast) {
+            for (root in screen.roots()) {
+                val hit = root.findAccessibilityNodeInfosByViewId("${root.packageName}:id/btn_Ileri")
+                    .firstOrNull { it.isVisibleToUser && Nodes.normLabel(it) in NEXT_LABELS }
+                if (hit != null) return Nodes.clickableSelfOrAncestor(hit) ?: hit
+            }
+        }
         for (node in screen.allNodes()) {
             if (!node.isVisibleToUser) continue
             if (Nodes.normLabel(node) in NEXT_LABELS) return Nodes.clickableSelfOrAncestor(node) ?: node
@@ -425,8 +549,8 @@ class FormFiller(
         return null
     }
 
-    private suspend fun clickNext() {
-        val button = waitFor(STEP_MS) { findNext()?.takeIf { it.isEnabled } }
+    private suspend fun clickNext(fast: Boolean = false) {
+        val button = waitFor(STEP_MS) { findNext(fast)?.takeIf { it.isEnabled } }
             ?: fail("İleri düğmesi", "etkin 'İleri' düğmesi", "bulunamadı veya pasif")
         clickOrFail(button, "İleri tıklanıyor")
     }
@@ -445,8 +569,13 @@ class FormFiller(
         const val POLL_TICK_MS = 15L
         const val OPTION_SCROLL_TRIES = 7
         const val LONG_LIST_TRIES = 30
+        const val CHECK_MS = 400L
+        const val SHOW_WAIT_MS = 500L
+        const val LONG_SCROLL_WAIT_MS = 500L
         const val LONG_LIST_MS = 15000L
         const val CITY = "Manisa"
+        const val VERIFY_CODE = "160922"
+        const val DIALOG_MS = 3000L
         const val MIN_SCORE = 0.80
         const val MIN_MARGIN = 0.07
         const val PLACEHOLDER = "seciniz"
